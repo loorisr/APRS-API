@@ -2,7 +2,7 @@
 
 A lightweight Dockerized REST + WebSocket API that connects to the [APRS-IS](https://www.aprs-is.net/) network and exposes APRS packet data to web applications.
 
-Built with **Python / FastAPI** on an Alpine base image (~50 MB image).
+Built with **Python / FastAPI** on an Alpine base image (~87 MB image).
 
 ---
 

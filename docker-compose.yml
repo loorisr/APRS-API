@@ -1,0 +1,24 @@
+services:
+  aprs-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # APRS-IS credentials
+      APRS_CALLSIGN: NOCALL        # your callsign (or N0CALL for read-only)
+      APRS_PASSCODE: "-1"          # -1 = receive-only; use real passcode to transmit
+      APRS_SERVER: euro.aprs2.net
+      APRS_PORT: "14580"
+
+      # Spatial filter applied server-side by APRS-IS
+      # Format: r/<lat>/<lon>/<range_km>
+      # Example: r/48.85/2.35/200  → 200 km around Paris
+      APRS_FILTER: "r/48.85/2.35/200"
+
+      # Comma-separated list of valid API tokens
+      # Leave empty to disable authentication
+      VALID_TOKENS: ""
+
+      # Number of packets kept in memory
+      BUFFER_SIZE: "500"
+    restart: unless-stopped

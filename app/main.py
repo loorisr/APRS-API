@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 
 import app.aprs_client as client
 from app.auth import verify_token
+from app.config import APRS_FILTER, APRS_SERVER, APRS_PORT, BUFFER_SIZE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -30,6 +31,11 @@ def health():
         "aprs_connected": client.connected,
         "packets_received": client.total_received,
         "packets_buffered": len(client.packets),
+        "config": {
+            "server": f"{APRS_SERVER}:{APRS_PORT}",
+            "filter": APRS_FILTER or None,
+            "buffer_size": BUFFER_SIZE,
+        },
     }
 
 

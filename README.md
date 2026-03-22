@@ -4,6 +4,8 @@ A lightweight Dockerized REST + WebSocket API that connects to the [APRS-IS](htt
 
 Built with **Python / FastAPI** on an Alpine base image (~87 MB image).
 
+![Docker Build](https://github.com/loris/APRS-API/actions/workflows/docker-build.yml/badge.svg)
+
 ---
 
 ## Features
@@ -60,14 +62,19 @@ See the full filter reference at: https://www.aprs-is.net/javAPRSFilter.aspx
 
 ### `GET /health`
 
-Returns connection status and packet counters. No authentication required.
+Returns connection status, packet counters, and active configuration. No authentication required.
 
 ```json
 {
   "status": "ok",
   "aprs_connected": true,
   "packets_received": 1042,
-  "packets_buffered": 500
+  "packets_buffered": 500,
+  "config": {
+    "server": "rotate.aprs.net:14580",
+    "filter": "r/48.85/2.35/200",
+    "buffer_size": 500
+  }
 }
 ```
 

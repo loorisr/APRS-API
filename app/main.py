@@ -3,11 +3,11 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 
 import app.aprs_client as client
 from app.auth import verify_token
-from app.config import APRS_FILTER, APRS_SERVER, APRS_PORT, BUFFER_SIZE
+from app.config import APRS_FILTER, APRS_SERVER, APRS_PORT, BUFFER_SIZE, SMART_CONNECT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -20,6 +20,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="APRS API", version="1.0.0", lifespan=lifespan)
+
+
+# ── Smart-connect middleware ──────────────────────────────────────────────────
+
+if SMART_CONNECT:
+    @app.middleware("http")
+    async def _activity_middleware(request: Request, call_next):
+        client.notify_activity()
+        return await call_next(request)
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
@@ -35,6 +44,7 @@ def health():
             "server": f"{APRS_SERVER}:{APRS_PORT}",
             "filter": APRS_FILTER or None,
             "buffer_size": BUFFER_SIZE,
+            "smart_connect": SMART_CONNECT,
         },
     }
 
@@ -71,6 +81,11 @@ async def websocket_endpoint(ws: WebSocket):
         return
 
     await ws.accept()
+
+    # In smart-connect mode, a WebSocket connection counts as activity
+    if SMART_CONNECT:
+        client.notify_activity()
+
     queue: asyncio.Queue = asyncio.Queue(maxsize=200)
     client.subscribers.append(queue)
     try:

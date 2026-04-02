@@ -11,6 +11,7 @@ Built with **Python / FastAPI** on an Alpine base image (~87 MB image).
 ## Features
 
 - Persistent TCP connection to APRS-IS with automatic reconnect and exponential backoff
+- Optional on-demand TCP connection: connects only when an API request arrives and disconnects after a configurable idle timeout (`SMART_CONNECT`)
 - Server-side spatial filter configured via environment variable (no client-side filtering)
 - In-memory circular buffer of recent packets
 - REST endpoints to query buffered packets
@@ -44,6 +45,7 @@ All settings are environment variables defined in `docker-compose.yml`.
 | `APRS_FILTER` | _(empty)_ | Server-side filter, e.g. `r/48.85/2.35/200` |
 | `BUFFER_SIZE` | `500` | Number of packets kept in memory |
 | `VALID_TOKENS` | _(empty)_ | Comma-separated API tokens. Empty = auth disabled |
+| `SMART_CONNECT` | `0` | `0` = always connected. `N` = connect on first request, disconnect after N minutes of inactivity |
 
 ### APRS-IS Filter Format
 
@@ -55,6 +57,21 @@ p/F4,TK                     # prefix filter (callsign prefixes)
 ```
 
 See the full filter reference at: https://www.aprs-is.net/javAPRSFilter.aspx
+
+### Smart Connect
+
+When `SMART_CONNECT` is set to a positive integer N, the API establishes the TCP connection to APRS-IS **only when an API request is received**, and **automatically disconnects** after N minutes without any request.
+
+```
+SMART_CONNECT=0   # always connected (default)
+SMART_CONNECT=5   # connect on first request, disconnect after 5 min idle
+```
+
+Activity is tracked from:
+- Any HTTP request to any endpoint (including `/health`)
+- Any active WebSocket connection (`/ws`)
+
+While a WebSocket client is connected, the TCP link to APRS-IS is kept alive regardless of the timeout. The countdown restarts each time a new request is received.
 
 ---
 
@@ -73,7 +90,8 @@ Returns connection status, packet counters, and active configuration. No authent
   "config": {
     "server": "rotate.aprs.net:14580",
     "filter": "r/48.85/2.35/200",
-    "buffer_size": 500
+    "buffer_size": 500,
+    "smart_connect": 0
   }
 }
 ```

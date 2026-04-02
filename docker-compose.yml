@@ -21,4 +21,8 @@ services:
 
       # Number of packets kept in memory
       BUFFER_SIZE: "500"
+
+      # Smart connect: 0 = always connected; N = connect on first request,
+      # disconnect automatically after N minutes without any request
+      SMART_CONNECT: "0"
     restart: unless-stopped

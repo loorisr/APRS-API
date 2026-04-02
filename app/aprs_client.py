@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from datetime import datetime, timezone
 
@@ -13,6 +14,7 @@ from app.config import (
     APRS_PORT,
     APRS_SERVER,
     BUFFER_SIZE,
+    SMART_CONNECT,
 )
 
 log = logging.getLogger(__name__)
@@ -22,6 +24,24 @@ packets: deque[dict] = deque(maxlen=BUFFER_SIZE)
 subscribers: list[asyncio.Queue] = []
 connected = False
 total_received = 0
+
+# Smart-connect state
+last_request_time: float = 0.0
+_activity_event = asyncio.Event()
+
+
+def notify_activity() -> None:
+    """Record API activity. Called on every request in SMART_CONNECT mode."""
+    global last_request_time
+    last_request_time = time.monotonic()
+    _activity_event.set()
+
+
+def _is_active(timeout_sec: float) -> bool:
+    """Return True if there are active WebSocket subscribers or a recent REST request."""
+    if subscribers:
+        return True
+    return last_request_time > 0 and (time.monotonic() - last_request_time) < timeout_sec
 
 
 def _packet_to_dict(p) -> dict:
@@ -140,40 +160,116 @@ async def broadcast(packet: dict) -> None:
 
 async def aprs_loop() -> None:
     global connected, total_received
-    retry_delay = 5
 
     login = f"user {APRS_CALLSIGN} pass {APRS_PASSCODE} vers aprs-api 1.0"
     if APRS_FILTER:
         login += f" filter {APRS_FILTER}"
     login += "\r\n"
 
-    while True:
-        try:
-            log.info("Connecting to %s:%d …", APRS_SERVER, APRS_PORT)
-            reader, writer = await asyncio.open_connection(APRS_SERVER, APRS_PORT)
-            writer.write(login.encode())
-            await writer.drain()
-            connected = True
-            log.info("Connected to APRS-IS")
-            retry_delay = 5  # reset backoff on success
+    if SMART_CONNECT == 0:
+        # ── Original mode: always connected with exponential backoff ──────────
+        retry_delay = 5
+        while True:
+            try:
+                log.info("Connecting to %s:%d …", APRS_SERVER, APRS_PORT)
+                reader, writer = await asyncio.open_connection(APRS_SERVER, APRS_PORT)
+                writer.write(login.encode())
+                await writer.drain()
+                connected = True
+                log.info("Connected to APRS-IS")
+                retry_delay = 5  # reset backoff on success
 
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    raw = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if raw.startswith("#"):
+                        continue  # server comment / heartbeat
+                    packet = parse_packet(raw)
+                    if packet:
+                        packets.append(packet)
+                        total_received += 1
+                        await broadcast(packet)
+
+            except Exception as e:
+                log.warning("APRS-IS connection error: %s", e)
+            finally:
+                connected = False
+                log.info("Reconnecting in %ds …", retry_delay)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+
+    else:
+        # ── Smart-connect mode: connect on demand, disconnect when idle ───────
+        timeout_sec = SMART_CONNECT * 60
+
+        while True:
+            # Wait until at least one API request arrives
+            if not _is_active(timeout_sec):
+                log.info("Smart connect: idle — waiting for an API request …")
+                _activity_event.clear()
+                # Re-check after clear (single-threaded: no race between clear and wait)
+                if not _is_active(timeout_sec):
+                    await _activity_event.wait()
+
+            # Inner loop: connect (with retries) while there is activity
+            retry_delay = 5
             while True:
-                line = await reader.readline()
-                if not line:
-                    break
-                raw = line.decode("utf-8", errors="replace").rstrip("\r\n")
-                if raw.startswith("#"):
-                    continue  # server comment / heartbeat
-                packet = parse_packet(raw)
-                if packet:
-                    packets.append(packet)
-                    total_received += 1
-                    await broadcast(packet)
+                if not _is_active(timeout_sec):
+                    break  # became idle before we could connect → back to outer loop
 
-        except Exception as e:
-            log.warning("APRS-IS connection error: %s", e)
-        finally:
-            connected = False
-            log.info("Reconnecting in %ds …", retry_delay)
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+                writer = None
+                try:
+                    log.info("Smart connect: connecting to %s:%d …", APRS_SERVER, APRS_PORT)
+                    reader, writer = await asyncio.open_connection(APRS_SERVER, APRS_PORT)
+                    writer.write(login.encode())
+                    await writer.drain()
+                    connected = True
+                    log.info("Smart connect: connected to APRS-IS")
+                    retry_delay = 5
+
+                    while True:
+                        if not _is_active(timeout_sec):
+                            log.info("Smart connect: idle for %d min — disconnecting", SMART_CONNECT)
+                            break
+
+                        try:
+                            line = await asyncio.wait_for(reader.readline(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            continue  # re-check idle
+
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                        if raw.startswith("#"):
+                            continue
+                        packet = parse_packet(raw)
+                        if packet:
+                            packets.append(packet)
+                            total_received += 1
+                            await broadcast(packet)
+
+                except Exception as e:
+                    log.warning("Smart connect: APRS-IS connection error: %s", e)
+
+                finally:
+                    connected = False
+                    if writer:
+                        try:
+                            writer.close()
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
+
+                # If idle after disconnect, go back to waiting
+                if not _is_active(timeout_sec):
+                    break
+
+                # Wait before reconnecting, but bail out early if we become idle
+                log.info("Smart connect: reconnecting in %ds …", retry_delay)
+                for _ in range(retry_delay):
+                    await asyncio.sleep(1)
+                    if not _is_active(timeout_sec):
+                        break
+                retry_delay = min(retry_delay * 2, 60)
